@@ -1,0 +1,147 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>Courtside Tap Log</title>
+</head><body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Barlow+Condensed:wght@600;700&display=swap">
+<style>
+/* Layout: one-screen phone tool. Big clock on top, 2x3 grid of tap targets, log strip below, export at bottom. */
+:root {
+  --bg: #f3f2ee; --surface: #ffffff; --fg: #15171c; --muted: #6b6f78; --line: #d8d6cf;
+  --accent: #c8102e; --accent-fg: #ffffff; --ok: #1f7a4d;
+  --display: "Barlow Condensed", "Arial Narrow", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #121317; --surface: #1c1e24; --fg: #ecebe6; --muted: #9a9ea8; --line: #30333b;
+  --accent: #e5203f; --accent-fg: #ffffff; --ok: #4fc584; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --bg: #121317; --surface: #1c1e24; --fg: #ecebe6; --muted: #9a9ea8; --line: #30333b;
+  --accent: #e5203f; --accent-fg: #ffffff; --ok: #4fc584; color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--mono);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px; display: flex; flex-direction: column; gap: 12px; box-sizing: border-box;
+  -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+h1 { font: 700 22px/1 var(--display); margin: 0; text-transform: uppercase; letter-spacing: .04em; }
+#clock { font: 600 20px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.hint { color: var(--muted); font-size: 12px; margin: 0; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; flex: 1; min-height: 0; }
+.tap { font: 700 30px/1.1 var(--display); text-transform: uppercase; border: 2px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--fg); min-height: 84px; padding: 8px; touch-action: manipulation; cursor: pointer; }
+.tap.us { border-color: var(--accent); color: var(--accent); }
+.tap:active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.tap:focus-visible { outline: 3px solid var(--ok); outline-offset: 2px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+button.small { font: 600 13px var(--mono); padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--fg); cursor: pointer; }
+button.small:focus-visible { outline: 2px solid var(--ok); }
+#last { font-size: 13px; min-height: 1.2em; font-variant-numeric: tabular-nums; }
+#count { color: var(--muted); font-size: 12px; }
+textarea { width: 100%; box-sizing: border-box; font: 12px var(--mono); height: 110px; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; -webkit-user-select: text; user-select: text; }
+label { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+input[type=number] { width: 70px; font: 13px var(--mono); padding: 4px; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 4px; }
+details { font-size: 12px; } summary { cursor: pointer; color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header>
+  <h1>Tap Log</h1>
+  <div id="clock">--:--:--.---</div>
+</header>
+<p class="hint">Tap the instant you see the event. Before tip-off, open <a href="https://time.is" target="_blank" rel="noopener">time.is</a> and enter the offset it shows below (e.g. +0.3 means your clock is 0.3 s ahead).</p>
+
+<div class="grid" id="grid">
+  <button class="tap us" data-ev="DET_SCORE">Pistons score</button>
+  <button class="tap" data-ev="PHI_SCORE">Philly score</button>
+  <button class="tap us" data-ev="CADE_SCORE">Cade Cunningham scores</button>
+  <button class="tap" data-ev="LEBRON_SCORE">LeBron scores</button>
+</div>
+
+<div class="row">
+  <button class="small" id="undo">Undo last</button>
+  <button class="small" id="mark">Mark (sync check)</button>
+  <label>time.is offset (s) <input type="number" id="offset" value="0" step="0.001" placeholder="+0.123"></label>
+  <span id="count">0 taps</span>
+</div>
+<div id="last"></div>
+
+<details>
+  <summary>Export CSV</summary>
+  <div class="row" style="margin:8px 0">
+    <button class="small" id="copy">Copy CSV</button>
+    <button class="small" id="clear">Clear all</button>
+    <span id="status" class="hint"></span>
+  </div>
+  <textarea id="csv" readonly></textarea>
+</details>
+
+<script>
+(function () {
+  var KEY = 'taplog_v1';
+  var log = [];
+  try { log = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { log = []; }
+  var offsetEl = document.getElementById('offset');
+  try { offsetEl.value = localStorage.getItem(KEY + '_off') || '0'; } catch (e) {}
+
+  function pad(n, w) { n = String(n); while (n.length < w) n = '0' + n; return n; }
+  function iso(ms) { return new Date(ms).toISOString(); }
+  function fmt(ms) { var d = new Date(ms); return pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2)+'.'+pad(d.getMilliseconds(),3); }
+
+  function save() {
+    try { localStorage.setItem(KEY, JSON.stringify(log)); } catch (e) {}
+    render();
+  }
+  function render() {
+    document.getElementById('count').textContent = log.length + ' taps';
+    var l = log[log.length - 1];
+    document.getElementById('last').textContent = l ? ('Last: ' + l.ev + ' @ ' + fmt(l.wall) + ' (' + l.src + ')') : '';
+    var rows = ['seq,event,team,wall_ms,wall_iso,perf_ms,offset_ms,source'];
+    log.forEach(function (r, i) { rows.push([i+1, r.ev, r.team || '', r.wall, iso(r.wall), r.perf.toFixed(3), r.off, r.src].join(',')); });
+    document.getElementById('csv').value = rows.join('\n');
+  }
+  var TEAM = { DET_SCORE: 'DET', CADE_SCORE: 'DET', PHI_SCORE: 'PHI', LEBRON_SCORE: 'PHI' };
+  function add(ev, src) {
+    var wall = Date.now(), perf = performance.now();
+    log.push({ ev: ev, team: TEAM[ev] || '', wall: wall, perf: perf, off: Math.round((Number(offsetEl.value) || 0) * 1000), src: src });
+    if (navigator.vibrate) { try { navigator.vibrate(20); } catch (e) {} }
+    save();
+  }
+
+  // pointerdown fires on finger contact, well before click; one handler per button, guard against duplicates.
+  var lastDown = 0;
+  document.querySelectorAll('.tap').forEach(function (b) {
+    b.addEventListener('pointerdown', function (e) {
+      var t = performance.now();
+      if (t - lastDown < 80) return;
+      lastDown = t;
+      add(b.dataset.ev, e.pointerType || 'pointer');
+      e.preventDefault();
+    });
+    b.addEventListener('click', function (e) { e.preventDefault(); });
+    b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  });
+
+  document.getElementById('mark').addEventListener('pointerdown', function () { add('SYNC_MARK', 'manual'); });
+  document.getElementById('undo').addEventListener('click', function () { log.pop(); save(); });
+  document.getElementById('clear').addEventListener('click', function () {
+    var s = document.getElementById('status');
+    if (s.dataset.armed === '1') { log = []; s.dataset.armed = ''; s.textContent = 'Cleared.'; save(); }
+    else { s.dataset.armed = '1'; s.textContent = 'Tap Clear again to confirm.'; }
+  });
+  offsetEl.addEventListener('change', function () { try { localStorage.setItem(KEY + '_off', offsetEl.value); } catch (e) {} });
+
+  document.getElementById('copy').addEventListener('click', function () {
+    var ta = document.getElementById('csv'), s = document.getElementById('status');
+    navigator.clipboard.writeText(ta.value).then(function () { s.textContent = 'Copied. Paste it into a message.'; })
+      .catch(function () { ta.focus(); ta.select(); s.textContent = 'Select all in the box and copy.'; });
+  });
+
+  function tick() { document.getElementById('clock').textContent = fmt(Date.now()); }
+  setInterval(tick, 50); tick();
+
+  if (navigator.wakeLock) { try { navigator.wakeLock.request('screen').catch(function () {}); } catch (e) {} }
+  render();
+})();
+</script>
+</body></html>
